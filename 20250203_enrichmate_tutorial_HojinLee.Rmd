@@ -1,0 +1,128 @@
+---
+title: "Tutorial for Enrichmate"
+author: "Hojin Lee"
+output: html_document
+date: "2025-02-03"
+---
+
+# Load Packages
+
+```{r message=FALSE}
+library(dplyr)
+library(plyr)
+library(fgsea)
+library(tibble)
+library(ggplot2)
+library(GO.db)
+library(GOSemSim)
+library(WriteXLS)
+library(colorRamp2)
+library(simplifyEnrichment)
+library(ComplexHeatmap)
+```
+
+# Set environment
+
+To conduct Enrichmate analysis, GOBP databases in different formats are necessary.
+Through the following code, the environment for analysis is set up.
+
+```{r}
+setwd("/Users/hojin/Dropbox/project/enrichmate/20250203/")
+source("/Users/hojin/Dropbox/project/enrichmate/20250203/20250203_enrichmate_function_hj.R")
+
+gogmt <- gmtPathways("/Users/hojin/Dropbox/project/enrichmate/20250203/GeneOntology/v2024.1.Hs/GOBP/c5.go.bp.v2024.1.Hs.symbols.gmt")
+goid_terms_df <- read.table("/Users/hojin/Dropbox/project/enrichmate/20250203/GeneOntology/v2024.1.Hs/GOBP/20250124_c5.go.bp.v2024.1.Hs.term.id_mapping_hj.txt",header = T, sep = "\t")
+
+df <- readRDS("/Users/hojin/Dropbox/project/enrichmate/20250203/GeneOntology/v2024.1.Hs/GOBP/20250124_c5.go.bp.v2024.1.Hs_ANCESTOR_df_hj.rds")
+goid_level_df <- readRDS("/Users/hojin/Dropbox/project/enrichmate/20250203/GeneOntology/v2024.1.Hs/GOBP/20250124_c5.go.bp.v2024.1.Hs_LEVEL_df_hj.rds")
+
+goid_ancestor_level_df <- merge(goid_level_df, df, by.x = "GOID", by.y = "ANCESTOR_GOID", all.y = T)
+colnames(goid_ancestor_level_df) <- c("ANCESTOR_GOID", "ANCESTOR_LEVEL", "TARGET_GOID", "ANCESTOR_GOTERM")
+goid_ancestor_level_df <- goid_ancestor_level_df %>% dplyr::filter(ANCESTOR_LEVEL != "all")
+
+goid_ancestor_info <- goid_terms_df$GOID[which(goid_terms_df$GOID %in% df$TARGET_GOID)]
+goid_terms_df <- goid_terms_df %>% dplyr::filter(GOID %in% goid_ancestor_info)
+gogmt <- gogmt[goid_terms_df$GOTERM]
+
+if (!("hsGO" %in% ls())) {
+  set.seed(1234); hsGO <- godata('org.Hs.eg.db', ont="BP", computeIC = T) # make IC score using GOsemsim package 
+}
+
+```
+
+# Obtain GOBP sets
+
+After conducting GSEA or ORA, significant GO terms were obtained.
+The GO IDs (GO:xxxxx) must be in vector format.
+The database for this analysis is constructed based on MsigDB data; therefore, only GO IDs included in MsigDB should be retained.
+Additionally, ancestor terms are used to obtain representative terms, so GO IDs containing information on ancestor terms must also be retained.
+
+```{r}
+
+tb <- read.csv("/Users/hojin/Dropbox/project/enrichmate/goblet2_adult_0.5_gProfiler_hsapiens_1-23-2025_4-36-35 PM__intersections_final.csv", sep = ",", header = T)
+
+tb %>% dplyr::select(c("source", "term_name", "term_id", "adjusted_p_value")) %>% head()
+
+tb <- tb %>% dplyr::filter(source == "GO:BP")
+
+GO_test <- goid_terms_df %>% dplyr::filter(GOID %in% tb$term_id) %>% dplyr::pull(GOID)
+
+GO_test <- GO_test[GO_test %in% goid_ancestor_level_df$TARGET_GOID] # subset GO terms have ancestor terms
+
+head(GO_test)
+```
+
+# Enrichmate analysis with outlier detection
+
+Calculate similarity matrix.
+```{r}
+# step 1 )
+w <- enrichmate_sim_mat(goids = GO_test, hsGO = hsGO)
+```
+
+Select the number of clusters.
+```{r}
+k_val <- 20
+```
+
+Distribution of small clusters.
+```{r}
+# step 2 )
+enrichmate_outlier_plot(w = w)
+```
+
+Conduct combined clustering.
+```{r message=FALSE}
+# step 3 )
+step3 <- enrichmate_clustering(cutoff = 0.84, w = w, k_vals = k_val, outlier_detect = T, goid_terms_df = goid_terms_df, goid_level_df = goid_level_df)
+```
+
+Define representative terms.
+```{r message=FALSE}
+# step 4 ) 
+step4 <- enrichmate_representative_terms(final_res_df = step3$final_res_df,
+                                         k_val = k_val,
+                                         goid_ancestor_level_df = goid_ancestor_level_df,
+                                         outlier_detect = T,
+                                         pseudoname_outliers_df = step3$pseudoname_outliers_df,
+                                         representative_term_level_cutoff = 2,
+                                         GO_explain = 3)
+```
+
+Make heatmap and summary files.
+```{r fig.width=20, fig.height=10}
+# step 5 ) 
+step5 <- enrichmate_go_heatmap_summary(w = w,
+                                       k_val = k_val,
+                                       outlier_detect = T,
+                                       ancestor_annotation = T,
+                                       filename1 = "total_GOBP_hj.xlsx",
+                                       filename2 = "representative_term_hj.xlsx",
+                                       plot_pdf = F, # if you want to save plot to pdf, assign T
+                                       heatmap_filename = "plot.pdf",
+                                       pseudoname_outliers_df = step3$pseudoname_outliers_df,
+                                       rep_df = step4,
+                                       goid_terms_df = goid_terms_df, font_size = 4)
+
+```
+
